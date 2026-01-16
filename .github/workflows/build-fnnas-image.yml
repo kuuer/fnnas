@@ -42,11 +42,11 @@ on:
       kernel_repo:
         description: "Set fnnas kernel repository"
         required: false
-        default: "你的用户名/fnos-rk3568-kernel"
+        default: "kuuer/fnos-rk3568-kernel"
         type: choice
         options:
           - ophub/fnnas
-          - 你的用户名/fnos-rk3568-kernel
+          - kuuer/fnos-rk3568-kernel
       fnnas_kernel:
         description: "Select fnnas kernel version"
         required: false

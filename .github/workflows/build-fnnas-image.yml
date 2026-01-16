@@ -70,12 +70,12 @@ on:
       builder_name:
         description: "Set fnnas builder signature"
         required: false
-        default: "kuuer"
+        default: "yourname"
         type: choice
         options:
           - ophub
           - angel
-          - kuuer
+          - yourname
 
 env:
   TZ: Etc/UTC

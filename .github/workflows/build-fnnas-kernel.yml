@@ -1,10 +1,10 @@
 #==========================================================================
-# Description: Build FnNAS Kernel
+# Description: Build FnNAS Kernel (With DSA Support for RK3568)
 # Copyright (C) 2025 https://fnnas.com
 # Copyright (C) 2026 https://github.com/ophub/fnnas
 #==========================================================================
 
-name: Build FnNAS Kernel
+name: Build FnNAS Kernel (RK3568 + DSA)
 
 on:
   repository_dispatch:
@@ -13,7 +13,7 @@ on:
       fnnas_base_version:
         description: "Select fnnas base image version"
         required: false
-        default: "amlogic_338"
+        default: "rockchip_330"
         type: choice
         options:
           - amlogic_338
@@ -38,7 +38,7 @@ on:
       debs_install:
         description: "Install kernel debs files"
         required: false
-        default: "none"
+        default: "rockchip"
         type: choice
         options:
           - amlogic
@@ -77,7 +77,6 @@ jobs:
           sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
           sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-fnnas-depends)
           sudo -E systemctl daemon-reload
-          #sudo -E apt-get -y full-upgrade
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
           sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
@@ -156,6 +155,41 @@ jobs:
 
           echo "status=success" >> ${GITHUB_OUTPUT}
 
+      - name: Inject DSA config to kernel (RK3568)
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        working-directory: /builder
+        run: |
+          # 定位内核源码目录（ophub/fnnas工具的默认路径）
+          KERNEL_SRC_DIR="/builder/fnnas/kernel/src"
+          mkdir -p ${KERNEL_SRC_DIR}
+          # 写入DSA核心配置（覆盖默认配置中的相关项）
+          cat > ${KERNEL_SRC_DIR}/.config << EOF
+          # DSA Core Config
+          CONFIG_DSA=y
+          CONFIG_DSA_CORE=y
+          CONFIG_DSA_TAG_RTL4_A=y
+          CONFIG_DSA_TAG_RTL8367=y
+          # RK3568 GMAC DSA
+          CONFIG_DSA_ROCKCHIP_GMAC=y
+          CONFIG_NET_DSA_ROCKCHIP=y
+          CONFIG_ROCKCHIP_GMAC=y
+          CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y
+          # Realtek RTL8367 Switch
+          CONFIG_DSA_RTL8367=y
+          CONFIG_DSA_RTL8367S=y
+          CONFIG_NET_DSA_REALTEK=y
+          # DMA Support
+          CONFIG_STMMAC_DMA=y
+          CONFIG_STMMAC_DSA=y
+          CONFIG_DMA_ENGINE=y
+          CONFIG_DMA_ROCKCHIP=y
+          # Keep other default configs
+          $(cat ${KERNEL_SRC_DIR}/.config 2>/dev/null | grep -v -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_DMA|CONFIG_STMMAC")
+          EOF
+          # 修复配置兼容性
+          cd ${KERNEL_SRC_DIR}
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig || true
+
       - name: Compile the fnnas kernel [ ${{ inputs.debs_version }} ]
         uses: ophub/fnnas@main
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
@@ -171,7 +205,7 @@ jobs:
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
-          tag: kernel_fnnas
+          tag: kernel_fnnas_rk3568_dsa
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
           allowUpdates: true
           removeArtifacts: false
@@ -179,9 +213,10 @@ jobs:
           makeLatest: false
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            - FnNAS Dedicated Kernel. Based on official [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) packages from `fnnas.com`,
-              and repackaged into .tar.gz format using the `rekernel` tool.
-              It is optimized for batch packaging and supports online updates via the `fnnas-update` command.
-            - FnNAS 专用内核。基于 `fnnas.com` 官方提供的 [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) 安装包，
-              利用本仓库的 `rekernel` 工具重新封装为 .tar.gz 格式。
-              该内核既适用于批量打包，也支持通过 `fnnas-update` 命令进行在线更新。
+            - FnNAS RK3568 Dedicated Kernel (With DSA Support). 
+              Based on official [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) packages from `fnnas.com`,
+              and injected DSA config for RTL8367 switch.
+              It supports eth1 network port of BenDian One device.
+            - FnNAS RK3568 专用内核（带DSA支持）。
+              基于 `fnnas.com` 官方dtbs包，注入RTL8367交换机的DSA配置，
+              适配BenDian One设备的eth1网口。

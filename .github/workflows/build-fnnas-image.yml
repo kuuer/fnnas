@@ -70,12 +70,12 @@ on:
       builder_name:
         description: "Set fnnas builder signature"
         required: false
-        default: "yourname"
+        default: "kuuer"
         type: choice
         options:
           - ophub
           - angel
-          - yourname
+          - kuuer
 
 env:
   TZ: Etc/UTC
@@ -200,7 +200,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          YOUR_GITHUB_USER="你的用户名"
+          YOUR_GITHUB_USER="kuuer"
           YOUR_REPO="fnos-rk3568-kernel"
           KERNEL_TAG="kernel_fnnas_rk3568_dsa"
 

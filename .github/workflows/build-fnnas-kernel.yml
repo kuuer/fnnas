@@ -218,4 +218,4 @@ jobs:
               and injected DSA config for RTL8367 switch.
               It supports eth1 network port of BenDian One device.
             - FnNAS RK3568 专用内核（带DSA支持）。
-              基于 `fnnas.com` 官方dtbs包，注入            RTL8367交换机的DSA配置。
+              基于 `fnnas.com` 官方dtbs包，注入RTL8367交换机的DSA配置。

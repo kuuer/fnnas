@@ -47,7 +47,7 @@ env:
   KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
   # 构建脚本预期的内核路径（关键：覆盖默认下载路径）
   SCRIPT_KERNEL_DIR: "/builder/fnnas/kernel_download"
-  SCRIPT_KERNEL_NAME: "6.1.y-rockchip.tar.gz"  # 脚本预期的内核文件名
+  SCRIPT_KERNEL_NAME: "6.1.y-rockchip.tar.gz"
   BACKUP_FNNAS_URL: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"
 
 jobs:
@@ -190,16 +190,22 @@ jobs:
           ls -l "${SCRIPT_KERNEL_DIR}"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Copy root directory DTB files to build path
+      - name: Copy root directory DTB files to build path (fix ls error)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         run: |
           if ls ${DTB_PATH} 1> /dev/null 2>&1; then
               echo "Copying DTB files from root directory..."
+              # 复制到基础镜像目录
               cp ${DTB_PATH} /builder/fnnas/
-              # 同时复制到内核目录（脚本可能从这里读取DTB）
-              cp ${DTB_PATH} "${{ steps.download_kernel.outputs.kernel_path }}/"
-              ls -l /builder/fnnas/*.dtb
-              ls -l "${{ steps.download_kernel.outputs.kernel_path }}/*.dtb"
+              # 复制到内核目录（先确认目录存在）
+              mkdir -p "/builder/fnnas/kernel_download/"
+              cp ${DTB_PATH} "/builder/fnnas/kernel_download/"
+              
+              # 修复ls报错：使用ls -l 路径/* 时，无文件会报错，改为ls -l 路径/ 并过滤dtb
+              echo "=== DTB files in /builder/fnnas/ ==="
+              ls -l /builder/fnnas/ | grep .dtb || echo "No DTB files found (but copy succeeded)"
+              echo "=== DTB files in /builder/fnnas/kernel_download/ ==="
+              ls -l /builder/fnnas/kernel_download/ | grep .dtb || echo "No DTB files found (but copy succeeded)"
           else
               echo "警告：根目录未找到DTB文件！继续构建，但可能导致镜像无法启动。"
           fi
@@ -214,12 +220,14 @@ jobs:
           auto_kernel: false      # 强制关闭自动下载
           kernel_repo: kuuer/fnnas
           builder_name: ${{ inputs.builder_name }}
-          dtb_path: ${DTB_PATH}
+          dtb_path: /builder/fnnas/  # 明确指定DTB文件所在路径
         env:
           # 关键：通过环境变量覆盖脚本内的内核下载URL（双重保险）
           KERNEL_DOWNLOAD_URL: "${KERNEL_URL}"
           # 禁用脚本的内核下载逻辑
           SKIP_KERNEL_DOWNLOAD: "true"
+          # 明确指定DTB路径给脚本
+          DTB_FILE_PATH: "/builder/fnnas/rk3568-nanopi-r5s.dtb"
 
       - name: Upload the packaged fnnas
         uses: ncipollo/release-action@main
@@ -235,7 +243,7 @@ jobs:
           body: |
             - Based on the official fnnas.com Arm64 release, for nanopi-r5s only.
             - Use custom kernel: 6.12.41-rockchip.tar.gz (from https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/)
-            - Use DTB files from root directory.
+            - Use DTB files from root directory: rk3568-nanopi-r5s.dtb.
             - 基于 fnnas.com 官方 Arm64 镜像构建，仅适配 nanopi-r5s 设备。
             - 使用自定义内核：6.12.41-rockchip.tar.gz（来自 https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/）。
-            - 使用根目录下的 DTB 文件。
+            - 使用根目录下的 DTB 文件：rk3568-nanopi-r5s.dtb。

@@ -31,7 +31,7 @@ env:
   FN_BASE_VERSION: "rockchip_330"       # 仅 RK3568 基础镜像
   RK3568_BOARD: "dg-tn3568"             # RK3568 适配设备
   KERNEL_USER: "kuuer"                  # 你的 GitHub 账号
-  KERNEL_REPO: "fnnos-rk3568-kernel"    # 你的 RK3568 DSA 内核仓库
+  KERNEL_REPO: "fnnas"    # 你的 RK3568 DSA 内核仓库
   KERNEL_TAG: "kernel_fnnas_rk3568_dsa" # 你的内核 Release 标签
   KERNEL_VERSION: "6.12.y"              # 内核版本
 

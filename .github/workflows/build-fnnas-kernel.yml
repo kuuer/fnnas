@@ -1,231 +1,130 @@
-#==========================================================================
-# Description: Build FnNAS Kernel (Only for RK3568 + DSA RTL8367S)
-# Copyright (C) 2025 https://fnnas.com
-# Copyright (C) 2026 https://github.com/ophub/fnnas
-#==========================================================================
-
-name: Build FnNAS Kernel (RK3568 + DSA RTL8367S)
-
-on:
-  repository_dispatch:
-  workflow_dispatch:  # 移除所有输入项，仅保留手动触发功能
-
-env:
-  TZ: Etc/UTC
-  # 固化RK3568相关参数，无需手动配置
-  FNNAS_BASE_VERSION: "rockchip_330"
-  DEBS_REPO: "ophub/fnnas"
-  DEBS_VERSION: "6.12.y"
-  DEBS_INSTALL: "rockchip"
-  DTBS_INSTALL: "true"
-
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Initialization environment
-        id: init
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          # 清理无用资源，释放磁盘空间
-          docker rmi -f $(docker images -q) 2>/dev/null || true
-          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
-          sudo swapoff -a
-          sudo rm -f /swapfile /mnt/swapfile
-          
-          # 更新并安装编译依赖
-          sudo -E apt-get -y update
-          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
-          sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-fnnas-depends)
-          
-          # 系统优化
-          sudo -E systemctl daemon-reload
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
-          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
-          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
-          
-          # 时间同步
-          sudo -E timedatectl set-timezone "${TZ:-Etc/UTC}"
-          sudo -E ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
-          sudo -E timedatectl set-ntp true
-          date -u
-          timedatectl status || true
-          
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      - name: Create simulated physical disk
-        id: disk
-        run: |
-          # 计算可用磁盘空间，创建逻辑卷
-          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
-          root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
-          
-          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
-          sudo truncate -s "${root_size}"G /root.img
-          sudo losetup /dev/loop6 /mnt/mnt.img
-          sudo losetup /dev/loop7 /root.img
-          sudo pvcreate /dev/loop6 /dev/loop7
-          sudo vgcreate github /dev/loop6 /dev/loop7
-          sudo lvcreate -n runner -l 100%FREE github
-          sudo mkfs.xfs -f -i sparse=0 -b size=4096 /dev/github/runner
-          
-          # 挂载逻辑卷到编译目录
-          sudo mkdir -p /builder
-          sudo mount /dev/github/runner /builder
-          sudo chown -R runner:runner /builder
-          df -Th
-          
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      - name: Download latest fnnas image (RK3568)
-        id: down
-        working-directory: /builder
-        if: (!cancelled())
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Starting to download RK3568 fnnas base image..."
-          mkdir -p fnnas
-
-          # 仅获取RK3568相关的最新镜像
-          latest_version=$(curl -s \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
-              jq -r --arg RTK "fnnas_base_image" \
-              --arg BOARD "${FNNAS_BASE_VERSION}" \
-              '[.[] | select(.tag_name | contains($RTK))] |
-              map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
-              sort_by(.updated_at) |
-              reverse |
-              .[0] |
-              {data: .updated_at, url: .url, name: .name}')
-
-          # 检查镜像是否存在
-          if [[ -z "${latest_version}" || "${latest_version}" == "null" ]]; then
-              echo "Error: RK3568 fnnas base image not found!"
-              exit 1
-          fi
-
-          # 下载镜像文件
-          latest_url="$(echo ${latest_version} | jq -r '.url')"
-          fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
-          echo "Downloading RK3568 image: ${fnnas_filename}"
-          
-          curl -fsSL \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/octet-stream" \
-              "${latest_url}" \
-              -o "fnnas/${fnnas_filename}"
-
-          if [[ "${?}" -ne "0" ]]; then
-              echo "Error: Download RK3568 image failed!"
-              exit 1
-          fi
-
-          # 创建软链接，方便后续编译
-          ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
-          ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
-
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      - name: Inject DSA (RTL8367S) config for RK3568
-        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
-        working-directory: /builder
-        run: |
-          # 内核源码目录
-          KERNEL_SRC_DIR="/builder/fnnas/kernel/src"
-          mkdir -p ${KERNEL_SRC_DIR}
-          
-          # 写入RK3568 + RTL8367S专用DSA配置（精准配置，无冗余）
-          cat > ${KERNEL_SRC_DIR}/.config << EOF
-          # 基础内核配置（保留原有非DSA配置）
-          $(cat ${KERNEL_SRC_DIR}/.config 2>/dev/null | grep -v -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_DMA|CONFIG_STMMAC|CONFIG_NET_DSA")
-          
-          # ===================== RK3568 DSA 核心配置 =====================
-          # DSA基础支持
-          CONFIG_DSA=y
-          CONFIG_DSA_CORE=y
-          CONFIG_DSA_TAG_8021Q=y
-          CONFIG_DSA_TAG_RTL4_A=y
-          CONFIG_DSA_TAG_RTL8367=y
-          
-          # RK3568 GMAC DSA驱动
-          CONFIG_DSA_ROCKCHIP_GMAC=y
-          CONFIG_NET_DSA_ROCKCHIP=y
-          CONFIG_ROCKCHIP_GMAC=y
-          CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y
-          CONFIG_ROCKCHIP_GMAC_DEBUG=y
-          
-          # RTL8367S交换机专用配置（核心）
-          CONFIG_DSA_RTL8367=y
-          CONFIG_DSA_RTL8367S=y
-          CONFIG_NET_DSA_REALTEK=y
-          CONFIG_NET_DSA_REALTEK_MDIO=y
-          CONFIG_NET_DSA_REALTEK_SMI=y
-          
-          # DMA支持（RK3568网络必备）
-          CONFIG_DMA_ENGINE=y
-          CONFIG_DMA_ROCKCHIP=y
-          CONFIG_STMMAC_ETH=y
-          CONFIG_STMMAC_DMA=y
-          CONFIG_STMMAC_DSA=y
-          CONFIG_STMMAC_RGMII=y
-          CONFIG_STMMAC_MDIO=y
-          
-          # 网络功能增强
-          CONFIG_NET_VLAN=y
-          CONFIG_BRIDGE=y
-          CONFIG_BRIDGE_VLAN_FILTERING=y
-          CONFIG_NET_SWITCHDEV=y
-          EOF
-          
-          # 配置兼容性修复（针对RK3568 arm64架构）
-          cd ${KERNEL_SRC_DIR}
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
-          
-          # 验证RTL8367S配置是否生效
-          if ! grep -q "CONFIG_DSA_RTL8367S=y" ${KERNEL_SRC_DIR}/.config; then
-              echo "Error: RTL8367S config injection failed!"
-              exit 1
-          fi
-          echo "DSA (RTL8367S) config injected successfully for RK3568!"
-
-      - name: Compile FnNAS Kernel (RK3568 + RTL8367S)
-        uses: ophub/fnnas@main
-        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
-        with:
-          build_target: kernel
-          fnnas_path: fnnas/*.img.xz
-          debs_repo: ${{ env.DEBS_REPO }}
-          debs_version: ${{ env.DEBS_VERSION }}
-          debs_install: ${{ env.DEBS_INSTALL }}
-          dtbs_install: ${{ env.DTBS_INSTALL }}
-
-      - name: Upload RK3568 DSA Kernel to Release
-        uses: ncipollo/release-action@main
-        if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
-        with:
-          tag: kernel_fnnas_rk3568_rtl8367s
-          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
-          allowUpdates: true
-          removeArtifacts: false
-          replacesArtifacts: true
-          makeLatest: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-          body: |
-            # FnNAS RK3568 专用内核 (RTL8367S DSA)
-            - 硬件适配：RK3568 芯片 + RTL8367S 交换机
-            - DSA 特性：完整支持分布式交换机架构，适配RK3568 eth1网口
-            - 内核版本：${{ env.DEBS_VERSION }}
-            - 编译基础：FnNAS rockchip_330 官方镜像
-            - 核心优化：固化RTL8367S驱动，启用VLAN/Bridge/switchdev功能
+- name: Inject DSA (RTL8367S) config for RK3568
+  if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+  working-directory: /builder
+  shell: /usr/bin/bash -e {0}
+  env:
+    TZ: Etc/UTC
+    FNNAS_BASE_VERSION: rockchip_330
+    DEBS_REPO: ophub/fnnas
+    DEBS_VERSION: 6.12.y
+    DEBS_INSTALL: rockchip
+    DTBS_INSTALL: true
+  run: |
+    # 定义fnnas内核编译的实际工作目录（适配ophub/fnnas工具的目录结构）
+    FNNAS_KERNEL_DIR="/builder/fnnas"
+    KERNEL_SRC_DIR="${FNNAS_KERNEL_DIR}/kernel/${DEBS_VERSION}"
+    
+    # 第一步：先通过fnnas工具初始化内核源码（关键修复）
+    echo "Initializing kernel source code for ${DEBS_VERSION}..."
+    cd ${FNNAS_KERNEL_DIR}
+    # 调用fnnas工具拉取指定版本的内核源码
+    bash <(curl -fsSL https://raw.githubusercontent.com/ophub/fnnas/main/fnnas.sh) \
+      -k ${DEBS_VERSION} \
+      -d ${DEBS_REPO} \
+      -a arm64 \
+      -o ${FNNAS_KERNEL_DIR} || {
+        echo "Error: Failed to initialize kernel source code!"
+        exit 1
+      }
+    
+    # 验证内核源码和Makefile是否存在
+    if [ ! -f "${KERNEL_SRC_DIR}/Makefile" ]; then
+        echo "Error: Kernel Makefile not found in ${KERNEL_SRC_DIR}!"
+        # 尝试查找实际的内核源码目录
+        find ${FNNAS_KERNEL_DIR}/kernel -name "Makefile" -type f | head -5
+        exit 1
+    fi
+    
+    # 第二步：备份原始配置文件
+    cd ${KERNEL_SRC_DIR}
+    [ -f ".config" ] && cp .config .config.bak || true
+    
+    # 第三步：生成默认配置（基于arm64架构）
+    echo "Generating default config for RK3568 arm64..."
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig || {
+        echo "Error: Failed to generate default config!"
+        exit 1
+    }
+    
+    # 第四步：注入RK3568 + RTL8367S专用DSA配置
+    echo "Injecting DSA (RTL8367S) config to kernel..."
+    cat > .config << EOF
+    # 保留原有非DSA相关配置
+    $(cat .config 2>/dev/null | grep -v -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_DMA|CONFIG_STMMAC|CONFIG_NET_DSA|CONFIG_BRIDGE|CONFIG_NET_VLAN|CONFIG_NET_SWITCHDEV")
+    
+    # ===================== RK3568 DSA 核心配置 =====================
+    # DSA基础支持
+    CONFIG_DSA=y
+    CONFIG_DSA_CORE=y
+    CONFIG_DSA_TAG_8021Q=y
+    CONFIG_DSA_TAG_RTL4_A=y
+    CONFIG_DSA_TAG_RTL8367=y
+    
+    # RK3568 GMAC DSA驱动
+    CONFIG_DSA_ROCKCHIP_GMAC=y
+    CONFIG_NET_DSA_ROCKCHIP=y
+    CONFIG_ROCKCHIP_GMAC=y
+    CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y
+    CONFIG_ROCKCHIP_GMAC_DEBUG=y
+    
+    # RTL8367S交换机专用配置（核心）
+    CONFIG_DSA_RTL8367=y
+    CONFIG_DSA_RTL8367S=y
+    CONFIG_NET_DSA_REALTEK=y
+    CONFIG_NET_DSA_REALTEK_MDIO=y
+    CONFIG_NET_DSA_REALTEK_SMI=y
+    
+    # DMA支持（RK3568网络必备）
+    CONFIG_DMA_ENGINE=y
+    CONFIG_DMA_ROCKCHIP=y
+    CONFIG_STMMAC_ETH=y
+    CONFIG_STMMAC_DMA=y
+    CONFIG_STMMAC_DSA=y
+    CONFIG_STMMAC_RGMII=y
+    CONFIG_STMMAC_MDIO=y
+    
+    # 网络功能增强
+    CONFIG_NET_VLAN=y
+    CONFIG_BRIDGE=y
+    CONFIG_BRIDGE_VLAN_FILTERING=y
+    CONFIG_NET_SWITCHDEV=y
+    EOF
+    
+    # 第五步：修复配置兼容性（关键步骤）
+    echo "Fixing config compatibility..."
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig || {
+        echo "Warning: olddefconfig has minor issues, continue with savedefconfig..."
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
+        cp defconfig .config
+    }
+    
+    # 第六步：验证关键配置是否生效
+    echo "Verifying RTL8367S DSA config..."
+    REQUIRED_CONFIGS=(
+        "CONFIG_DSA_RTL8367S=y"
+        "CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y"
+        "CONFIG_DSA_CORE=y"
+    )
+    CONFIG_ERROR=0
+    for config in "${REQUIRED_CONFIGS[@]}"; do
+        if ! grep -q "^${config}$" .config; then
+            echo "Error: Missing required config: ${config}"
+            CONFIG_ERROR=1
+        fi
+    done
+    
+    if [ ${CONFIG_ERROR} -eq 1 ]; then
+        echo "Error: Critical DSA config injection failed!"
+        # 打印当前配置供调试
+        grep -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_RTL8367" .config
+        exit 1
+    fi
+    
+    # 保存最终配置
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
+    cp defconfig ${FNNAS_KERNEL_DIR}/kernel_defconfig
+    
+    echo "✅ DSA (RTL8367S) config injected successfully for RK3568!"
+    echo "Kernel config path: ${KERNEL_SRC_DIR}/.config"
+    # 打印关键配置确认
+    grep -E "CONFIG_DSA_RTL8367S|CONFIG_ROCKCHIP_GMAC_DSA" .config

@@ -43,11 +43,11 @@ env:
   TZ: Etc/UTC
   DTB_PATH: "${{ github.workspace }}/*.dtb"
   # 固定内核下载地址
-  CUSTOM_KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
+  CUSTOM_KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.12.41-rockchip.tar.gz"
   CUSTOM_KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
   # 脚本内的内核路径（从错误日志提取）
-  SCRIPT_KERNEL_DIR: "/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/6.1.y"
-  SCRIPT_KERNEL_NAME: "6.1.y-rockchip.tar.gz"
+  SCRIPT_KERNEL_DIR: "/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/6.12.41"
+  SCRIPT_KERNEL_NAME: "6.12.41-rockchip.tar.gz"
   BACKUP_FNNAS_URL: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"
 
 jobs:
@@ -198,13 +198,13 @@ jobs:
           # 检查脚本文件是否存在
           if [[ -f "${SCRIPT_FILE}" ]]; then
               echo "修改构建脚本中的内核下载URL..."
-              # 替换脚本中的内核下载URL（匹配rockchip 6.1.y）
-              sudo sed -i "s|https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.1.y-rockchip.tar.gz|${CUSTOM_KERNEL_URL}|g" "${SCRIPT_FILE}"
-              # 替换所有6.1.y-rockchip.tar.gz的下载URL（兜底）
-              sudo sed -i "s|6.1.y-rockchip.tar.gz|${CUSTOM_KERNEL_FILENAME}|g" "${SCRIPT_FILE}"
+              # 替换脚本中的内核下载URL（匹配rockchip 6.12.41）
+              sudo sed -i "s|https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.12.41-rockchip.tar.gz|${CUSTOM_KERNEL_URL}|g" "${SCRIPT_FILE}"
+              # 替换所有6.12.41-rockchip.tar.gz的下载URL（兜底）
+              sudo sed -i "s|6.12.41-rockchip.tar.gz|${CUSTOM_KERNEL_FILENAME}|g" "${SCRIPT_FILE}"
               echo "脚本修改完成，已替换内核URL为：${CUSTOM_KERNEL_URL}"
               # 查看修改后的脚本（验证）
-              grep -n "6.1.y-rockchip.tar.gz\|kernel_fnnas_rk3568_dsa" "${SCRIPT_FILE}" || echo "未找到匹配行，但已提前下载内核到路径"
+              grep -n "6.12.41-rockchip.tar.gz\|kernel_fnnas" "${SCRIPT_FILE}" || echo "未找到匹配行，但已提前下载内核到路径"
           else
               echo "未找到构建脚本文件，跳过URL替换（已提前下载内核到路径）"
           fi
@@ -235,7 +235,7 @@ jobs:
         with:
           fnnas_path: fnnas/*.img
           fnnas_board: ${{ inputs.fnnas_board }}
-          fnnas_kernel: "6.1.y"
+          fnnas_kernel: "6.12.41"
           auto_kernel: false
           kernel_repo: kuuer/fnnas
           builder_name: ${{ inputs.builder_name }}
@@ -259,8 +259,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             - Based on the official fnnas.com Arm64 release, for nanopi-r5s only.
-            - Use custom kernel: 6.12.41-rockchip.tar.gz (from https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/)
+            - Use custom kernel: 6.12.41-rockchip.tar.gz (from https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/)
             - Use DTB files from root directory: rk3568-nanopi-r5s.dtb.
             - 基于 fnnas.com 官方 Arm64 镜像构建，仅适配 nanopi-r5s 设备。
-            - 使用自定义内核：6.12.41-rockchip.tar.gz（来自 https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/）。
+            - 使用自定义内核：6.12.41-rockchip.tar.gz（来自 https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/）。
             - 使用根目录下的 DTB 文件：rk3568-nanopi-r5s.dtb。

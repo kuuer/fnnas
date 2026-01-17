@@ -43,7 +43,7 @@ env:
   TZ: Etc/UTC
   DTB_PATH: "${{ github.workspace }}/*.dtb"
   # 固定内核下载地址
-  CUSTOM_KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.12.41-rockchip.tar.gz"
+  CUSTOM_KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
   CUSTOM_KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
   # 脚本内的内核路径（从错误日志提取）
   SCRIPT_KERNEL_DIR: "/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/6.12.41"
@@ -199,7 +199,7 @@ jobs:
           if [[ -f "${SCRIPT_FILE}" ]]; then
               echo "修改构建脚本中的内核下载URL..."
               # 替换脚本中的内核下载URL（匹配rockchip 6.12.41）
-              sudo sed -i "s|https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.12.41-rockchip.tar.gz|${CUSTOM_KERNEL_URL}|g" "${SCRIPT_FILE}"
+              sudo sed -i "s|https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz|${CUSTOM_KERNEL_URL}|g" "${SCRIPT_FILE}"
               # 替换所有6.12.41-rockchip.tar.gz的下载URL（兜底）
               sudo sed -i "s|6.12.41-rockchip.tar.gz|${CUSTOM_KERNEL_FILENAME}|g" "${SCRIPT_FILE}"
               echo "脚本修改完成，已替换内核URL为：${CUSTOM_KERNEL_URL}"
@@ -259,8 +259,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             - Based on the official fnnas.com Arm64 release, for nanopi-r5s only.
-            - Use custom kernel: 6.12.41-rockchip.tar.gz (from https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/)
+            - Use custom kernel: 6.12.41-rockchip.tar.gz (from https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/)
             - Use DTB files from root directory: rk3568-nanopi-r5s.dtb.
             - 基于 fnnas.com 官方 Arm64 镜像构建，仅适配 nanopi-r5s 设备。
-            - 使用自定义内核：6.12.41-rockchip.tar.gz（来自 https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/）。
+            - 使用自定义内核：6.12.41-rockchip.tar.gz（来自 https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/）。
             - 使用根目录下的 DTB 文件：rk3568-nanopi-r5s.dtb。

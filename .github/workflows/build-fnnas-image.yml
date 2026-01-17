@@ -34,6 +34,8 @@ env:
   KERNEL_REPO: "fnnas"    # 你的 RK3568 DSA 内核仓库
   KERNEL_TAG: "kernel_fnnas_rk3568_dsa" # 你的内核 Release 标签
   KERNEL_VERSION: "6.12.y"              # 内核版本
+  # 新增：固定内核下载URL
+  KERNEL_DOWNLOAD_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
 
 jobs:
   build:
@@ -193,34 +195,50 @@ jobs:
 
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      # 新增：下载并替换RK3568 DSA内核
+      # 新增：下载并替换RK3568 DSA内核（修改为固定URL下载）
       - name: Download RK3568 DSA Kernel (Custom)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         working-directory: /builder
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /builder/custom-kernel
           cd /builder/custom-kernel
 
-          # 下载自定义DSA内核
-          gh release download ${KERNEL_TAG} \
-            --repo ${KERNEL_USER}/${KERNEL_REPO} \
-            --pattern "*.tar.gz" \
-            --clobber || {
-              echo "❌ RK3568 DSA Kernel download failed! Check: https://github.com/${KERNEL_USER}/${KERNEL_REPO}/releases/tag/${KERNEL_TAG}"
+          # 定义内核下载URL和文件名
+          kernel_url="${KERNEL_DOWNLOAD_URL}"
+          kernel_filename=$(basename "${kernel_url}")
+
+          # 下载自定义DSA内核（使用curl直接下载固定URL）
+          echo "✅ 开始下载RK3568 DSA内核：${kernel_url}"
+          curl -fsSL --retry 3 --connect-timeout 30 \
+               "${kernel_url}" \
+               -o "${kernel_filename}" || {
+              echo "❌ RK3568 DSA Kernel下载失败！请检查URL是否有效：${kernel_url}"
               exit 1
             }
 
+          # 校验文件是否下载成功
+          if [[ ! -f "${kernel_filename}" ]]; then
+              echo "❌ 未找到下载的内核文件：${kernel_filename}"
+              exit 1
+          fi
+          echo "✅ 内核文件下载成功：${kernel_filename}"
+
           # 解压并替换默认内核
-          tar -zxvf *.tar.gz
+          echo "✅ 开始解压内核文件..."
+          tar -zxvf "${kernel_filename}" || {
+              echo "❌ 内核文件解压失败！请检查文件完整性"
+              exit 1
+            }
+
+          # 替换内核路径
           rm -rf /builder/fnnas/kernel
           ln -sf /builder/custom-kernel /builder/fnnas/kernel
           
           # 兜底：替换工具内核路径，杜绝404
           rm -rf /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
           ln -sf /builder/custom-kernel /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
-          echo "✅ RK3568 DSA Kernel loaded successfully"
+          
+          echo "✅ RK3568 DSA Kernel加载成功"
 
       - name: Packaging fnnas (ONLY RK3568)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
@@ -233,7 +251,6 @@ jobs:
           kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
           kernel_path: /builder/custom-kernel    # 强制本地内核
           kernel_download: false                 # 禁用工具下载
-          builder_name: ${{ inputs.builder_name }}
 
       - name: Upload the packaged fnnas (RK3568 DSA)
         uses: ncipollo/release-action@main

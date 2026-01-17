@@ -243,14 +243,20 @@ jobs:
       - name: Packaging fnnas (ONLY RK3568)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         uses: ophub/fnnas@main
+        env:
+          # 强制屏蔽内核下载逻辑
+            KERNEL_DOWNLOAD: "false"
+            AUTO_KERNEL: "false"
         with:
           fnnas_path: fnnas/*.img.xz
           fnnas_board: ${{ env.RK3568_BOARD }}  # 仅编译dg-tn3568
           fnnas_kernel: ${{ env.KERNEL_VERSION }}
           auto_kernel: false                     # 禁用自动内核
           kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
+          kernel_tag: ${KERNEL_TAG} 
           kernel_path: /builder/custom-kernel    # 强制本地内核
           kernel_download: false                 # 禁用工具下载
+          skip_kernel_check: true 
 
       - name: Upload the packaged fnnas (RK3568 DSA)
         uses: ncipollo/release-action@main

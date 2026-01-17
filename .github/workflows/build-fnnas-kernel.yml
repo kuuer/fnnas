@@ -216,6 +216,6 @@ jobs:
             - FnNAS RK3568 Dedicated Kernel (With DSA Support). 
               Based on official [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) packages from `fnnas.com`,
               and injected DSA config for RTL8367 switch.
-              It supports eth1 network port of BenDian One device.
+              It supports eth1 network port of RK3568 DSA device.
             - FnNAS RK3568 专用内核（带DSA支持）。
               基于 `fnnas.com` 官方dtbs包，注入RTL8367交换机的DSA配置。

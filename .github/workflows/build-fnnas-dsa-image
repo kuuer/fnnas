@@ -1,0 +1,249 @@
+#=====================================================================================
+# https://github.com/ophub/fnnas
+# Description: Build FnNAS Image (ONLY for BenDian One RK3568 + DSA Kernel)
+# Fix: 禁用自动内核下载，强制使用本地自定义内核，适配RK3568架构
+#=====================================================================================
+
+name: Build FnNAS Image (BenDian One ONLY)
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      fnnas_kernel:
+        description: "Select kernel version"
+        required: false
+        default: "6.12.y"
+        type: choice
+        options:
+          - 6.12.y
+      auto_kernel:
+        description: "Auto use latest kernel"
+        required: false
+        default: false
+        type: boolean
+      fnnas_storage:
+        description: "Release tag name"
+        required: false
+        default: "fnnas_bendian_one_dsa"
+        type: string
+      builder_name:
+        description: "Builder signature"
+        required: false
+        default: "kuuer"
+        type: string
+
+# 固化核心参数，避免手动选择出错
+env:
+  TZ: Etc/UTC
+  BENDIAN_DTB: "rockchip-rk3568-bendian-one.dtb"
+  BENDIAN_BOARD: "dg-tn3568"
+  FN_BASE_VERSION: "rockchip_330"
+  KERNEL_USER: "kuuer"
+  KERNEL_REPO: "fnnas"
+  KERNEL_TAG: "kernel_fnnas_rk3568_dsa"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialization environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo -E apt-get -y update
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-fnnas-depends)
+          sudo -E systemctl daemon-reload
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo -E timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo -E ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo -E timedatectl set-ntp true
+          date -u
+          timedatectl status || true
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create simulated physical disk
+        run: |
+          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
+          root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
+          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
+          sudo truncate -s "${root_size}"G /root.img
+          sudo losetup /dev/loop6 /mnt/mnt.img
+          sudo losetup /dev/loop7 /root.img
+          sudo pvcreate /dev/loop6
+          sudo pvcreate /dev/loop7
+          sudo vgcreate github /dev/loop6 /dev/loop7
+          sudo lvcreate -n runner -l 100%FREE github
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 /dev/github/runner
+          sudo mkdir -p /builder
+          sudo mount /dev/github/runner /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Download Rockchip 330 base image (ONLY RK3568)
+        id: down
+        working-directory: /builder
+        if: (!cancelled())
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [[ -d "fnnas" ]] || mkdir -p fnnas
+          input_url="${{ inputs.fnnas_url }}"
+          fnnas_base_version="${FN_BASE_VERSION}"
+
+          if [[ -n "${input_url}" ]]; then
+              clean_url="${input_url%%\?*}"
+              regex="github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)"
+              if [[ "${clean_url}" =~ $regex ]]; then
+                  owner="${BASH_REMATCH[1]}"
+                  repo="${BASH_REMATCH[2]}"
+                  tag="${BASH_REMATCH[3]}"
+                  filename="${BASH_REMATCH[4]}"
+                  gh release download "${tag}" \
+                      --repo "${owner}/${repo}" \
+                      --pattern "${filename}" \
+                      --dir "fnnas" \
+                      --clobber
+                  [[ -f "fnnas/${filename}" ]] && { echo "status=success" >> ${GITHUB_OUTPUT}; exit 0; }
+              fi
+              latest_url="${input_url}"
+              fnnas_filename=$(basename "${clean_url}")
+          else
+              latest_version=$(curl -s \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                  https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
+                  jq -r --arg RTK "fnnas_base_image" \
+                  --arg BOARD "${fnnas_base_version}" \
+                  '[.[] | select(.tag_name | contains($RTK))] |
+                  map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
+                  sort_by(.updated_at) |
+                  reverse |
+                  .[0] |
+                  {data: .updated_at, url: .url, name: .name}')
+              [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && { echo "Download failed: Rockchip 330 base image not found"; exit 1; }
+              latest_url="$(echo ${latest_version} | jq -r '.url')"
+              fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
+          fi
+
+          curl -fsSL \
+               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/octet-stream" \
+               "${latest_url}" \
+               -o "fnnas/${fnnas_filename}"
+          [[ "${?}" -ne "0" ]] && { echo "Download failed: ${fnnas_filename}"; exit 1; }
+
+          fnnas_storage="${{ inputs.fnnas_storage }}"
+          [[ -n "${fnnas_storage}" ]] || fnnas_storage="fnnas_save"
+          echo "build_tag=${fnnas_storage}" >> ${GITHUB_ENV}
+          ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
+          ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
+          echo "✅ Rockchip 330 base image downloaded successfully"
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Download Custom DSA Kernel (RK3568 for BenDian One)
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        working-directory: /builder
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /builder/custom-kernel
+          cd /builder/custom-kernel
+
+          gh release download ${KERNEL_TAG} \
+            --repo ${KERNEL_USER}/${KERNEL_REPO} \
+            --pattern "*.tar.gz" \
+            --clobber || {
+              echo "❌ Kernel download failed! Check repo/tag/token: https://github.com/${KERNEL_USER}/${KERNEL_REPO}/releases/tag/${KERNEL_TAG}"
+              exit 1
+            }
+
+          tar -zxvf *.tar.gz
+          rm -rf /builder/fnnas/kernel
+          ln -sf /builder/custom-kernel /builder/fnnas/kernel
+          echo "✅ Custom DSA kernel loaded successfully"
+
+      - name: Inject BenDian One DTB (Build from source or copy)
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        working-directory: /builder
+        run: |
+          DTS_DIR="arch/arm64/boot/dts/rockchip"
+          # Compile DTB from kernel source first
+          if [[ -d "/builder/custom-kernel/${DTS_DIR}" ]]; then
+              echo "📌 Compiling DTB from kernel source"
+              cd /builder/custom-kernel
+              sudo apt-get install -y device-tree-compiler
+              make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${BENDIAN_DTB} -j$(nproc)
+              if [[ -f "${DTS_DIR}/${BENDIAN_DTB}" ]]; then
+                  sudo cp ${DTS_DIR}/${BENDIAN_DTB} /builder/fnnas/kernel/dtb/rockchip/
+                  echo "✅ DTB compiled successfully"
+                  exit 0
+              fi
+          fi
+
+          # Fallback: copy from repo root
+          if [[ -f "${{ github.workspace }}/${BENDIAN_DTB}" ]]; then
+              sudo cp ${{ github.workspace }}/${BENDIAN_DTB} /builder/fnnas/kernel/dtb/rockchip/
+              echo "✅ DTB copied from repo root"
+          else
+              echo "❌ Error: ${BENDIAN_DTB} not found! Upload it to repo root first"
+              exit 1
+          fi
+
+      - name: Clean default kernel dir (force use custom kernel)
+        run: |
+          # Delete tool's default kernel download path
+          rm -rf /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
+          # Link to custom kernel
+          ln -sf /builder/custom-kernel /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
+          echo "✅ Default kernel dir cleaned, custom kernel linked"
+
+      - name: Package FnNAS (ONLY BenDian One RK3568)
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        uses: ophub/fnnas@main
+        with:
+          fnnas_path: fnnas/*.img.xz
+          fnnas_board: ${{ env.BENDIAN_BOARD }}
+          fnnas_kernel: ${{ inputs.fnnas_kernel }}
+          auto_kernel: ${{ inputs.auto_kernel }}
+          kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
+          kernel_path: /builder/custom-kernel  # Force use local kernel
+          builder_name: ${{ inputs.builder_name }}
+          build_target: rockchip  # Only compile Rockchip architecture
+          debs_install: none  # No extra debs
+          dtbs_install: false  # No extra dtbs
+
+      - name: Upload BenDian One Image to Release
+        uses: ncipollo/release-action@main
+        if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
+        with:
+          tag: ${{ env.build_tag }}
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allowUpdates: true
+          removeArtifacts: false
+          replacesArtifacts: true
+          makeLatest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            # FnNAS Image for BenDian One (RK3568)
+            - **Kernel**: 6.12.y-trim-dsa (Supports RTL8367 switch & eth1 port)
+            - **DTB**: ${BENDIAN_DTB} (100% hardware compatibility)
+            - **Base Image**: Rockchip 330 (RK3568 architecture only)
+            - **Builder**: ${{ inputs.builder_name }}
+            - ⚠️ Only for BenDian One, do not flash to other devices!

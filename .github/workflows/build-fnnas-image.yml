@@ -28,9 +28,9 @@ on:
         required: false
         default: "fnnas_nanopi-r5s"
       fnnas_url:
-        description: "Custom fnnas image download url (必填！填写ophub的rockchip_330基础镜像URL)"
-        required: true  # 改为必填，避免自动检测失败
-        default: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"  # 填充ophub的官方基础镜像URL
+        description: "Custom fnnas image download url"
+        required: true
+        default: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"
       builder_name:
         description: "Set fnnas builder signature"
         required: false
@@ -45,7 +45,9 @@ env:
   # 固定内核下载地址
   KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
   KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
-  # 备用基础镜像URL（ophub官方），防止自定义URL失效
+  # 构建脚本预期的内核路径（关键：覆盖默认下载路径）
+  SCRIPT_KERNEL_DIR: "/builder/fnnas/kernel_download"
+  SCRIPT_KERNEL_NAME: "6.1.y-rockchip.tar.gz"  # 脚本预期的内核文件名
   BACKUP_FNNAS_URL: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"
 
 jobs:
@@ -113,8 +115,6 @@ jobs:
           input_url="${{ inputs.fnnas_url }}"
           fnnas_base_version="${{ inputs.fnnas_base_version }}"
 
-          # ========== 核心修复：优先使用自定义URL，禁用自动检测 ==========
-          # 强制使用自定义URL（已设为必填），不再调用API自动检测
           if [[ -z "${input_url}" ]]; then
               echo "未填写自定义镜像URL，使用备用地址：${BACKUP_FNNAS_URL}"
               input_url="${BACKUP_FNNAS_URL}"
@@ -124,24 +124,20 @@ jobs:
           clean_url="${input_url%%\?*}"
           fnnas_filename=$(basename "${clean_url}")
 
-          # 下载基础镜像（增加超时和重试机制）
           curl -fsSL --connect-timeout 30 --max-time 600 --retry 3 \
                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                -H "Accept: application/octet-stream" \
                "${input_url}" \
                -o "fnnas/${fnnas_filename}"
 
-          # 验证下载结果
           if [[ ! -f "fnnas/${fnnas_filename}" ]]; then
               echo "基础镜像下载失败！尝试备用地址：${BACKUP_FNNAS_URL}"
-              # 重试备用地址
               curl -fsSL --connect-timeout 30 --max-time 600 --retry 3 \
                    -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                    -H "Accept: application/octet-stream" \
                    "${BACKUP_FNNAS_URL}" \
                    -o "fnnas/${fnnas_filename}"
               
-              # 再次验证，失败则终止
               if [[ ! -f "fnnas/${fnnas_filename}" ]]; then
                   echo "备用地址下载也失败！请检查URL是否有效。"
                   exit 1
@@ -149,6 +145,13 @@ jobs:
           fi
 
           echo "基础镜像下载成功：fnnas/${fnnas_filename}"
+          # 解压基础镜像（脚本需要.img文件，而非.img.xz）
+          if [[ "${fnnas_filename}" == *.xz ]]; then
+              echo "解压基础镜像..."
+              xz -d "fnnas/${fnnas_filename}"
+              fnnas_filename="${fnnas_filename%.xz}"
+              echo "解压后文件名：${fnnas_filename}"
+          fi
           fnnas_storage="${{ inputs.fnnas_storage }}"
           [[ -n "${fnnas_storage}" ]] || fnnas_storage="fnnas_save"
           echo "build_tag=${fnnas_storage}" >> ${GITHUB_ENV}
@@ -157,28 +160,34 @@ jobs:
 
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Download custom kernel (kernel_fnnas_rk3568_dsa)
+      - name: Download custom kernel and override script path
         id: download_kernel
-        working-directory: /builder/fnnas
+        working-directory: /builder
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         run: |
-          # 创建内核目录
-          mkdir -p kernel && cd kernel
-          # 下载指定内核文件（增加超时和重试）
+          # 1. 创建脚本预期的内核下载目录（关键：和脚本内的路径一致）
+          mkdir -p "${SCRIPT_KERNEL_DIR}"
+          cd "${SCRIPT_KERNEL_DIR}"
+
+          # 2. 下载自定义内核
           echo "Downloading custom kernel from: ${KERNEL_URL}"
           curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 \
-               "${KERNEL_URL}" -o "${KERNEL_FILENAME}"
+               "${KERNEL_URL}" -o "${SCRIPT_KERNEL_NAME}"
           
-          # 验证下载是否成功
-          if [[ ! -f "${KERNEL_FILENAME}" ]]; then
+          # 3. 验证内核文件
+          if [[ ! -f "${SCRIPT_KERNEL_NAME}" ]]; then
               echo "Kernel download failed! URL: ${KERNEL_URL}"
               exit 1
           fi
+
+          # 4. 解压内核到脚本预期的路径（模拟脚本下载并解压的过程）
+          echo "解压内核文件..."
+          tar -zxf "${SCRIPT_KERNEL_NAME}" -C "${SCRIPT_KERNEL_DIR}"
           
-          # 解压内核文件（按需，若构建脚本需要解压后的文件则保留）
-          tar -zxf "${KERNEL_FILENAME}"
-          echo "Kernel download and extract success."
-          echo "kernel_path=/builder/fnnas/kernel" >> ${GITHUB_OUTPUT}
+          # 5. 输出内核路径供后续步骤使用
+          echo "kernel_path=${SCRIPT_KERNEL_DIR}" >> ${GITHUB_OUTPUT}
+          echo "内核文件已放置到脚本预期路径：${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}"
+          ls -l "${SCRIPT_KERNEL_DIR}"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Copy root directory DTB files to build path
@@ -187,26 +196,30 @@ jobs:
           if ls ${DTB_PATH} 1> /dev/null 2>&1; then
               echo "Copying DTB files from root directory..."
               cp ${DTB_PATH} /builder/fnnas/
+              # 同时复制到内核目录（脚本可能从这里读取DTB）
+              cp ${DTB_PATH} "${{ steps.download_kernel.outputs.kernel_path }}/"
               ls -l /builder/fnnas/*.dtb
+              ls -l "${{ steps.download_kernel.outputs.kernel_path }}/*.dtb"
           else
               echo "警告：根目录未找到DTB文件！继续构建，但可能导致镜像无法启动。"
-              # 注释exit 1，避免因无DTB文件终止构建（若需要强制检查则取消注释）
-              # exit 1
           fi
 
-      - name: Packaging fnnas
+      - name: Packaging fnnas (skip kernel download)
         if: ${{ steps.down.outputs.status }} == 'success' && steps.download_kernel.outputs.status == 'success' && !cancelled()
         uses: kuuer/fnnas@main
         with:
-          fnnas_path: fnnas/*.img.xz
+          fnnas_path: fnnas/*.img
           fnnas_board: ${{ inputs.fnnas_board }}
-          # 强制指定内核路径，覆盖原有内核逻辑
-          kernel_path: ${{ steps.download_kernel.outputs.kernel_path }}
-          kernel_filename: ${{ env.KERNEL_FILENAME }}
-          auto_kernel: false
+          fnnas_kernel: "6.1.y"  # 匹配脚本预期的内核版本标识
+          auto_kernel: false      # 强制关闭自动下载
           kernel_repo: kuuer/fnnas
           builder_name: ${{ inputs.builder_name }}
           dtb_path: ${DTB_PATH}
+        env:
+          # 关键：通过环境变量覆盖脚本内的内核下载URL（双重保险）
+          KERNEL_DOWNLOAD_URL: "${KERNEL_URL}"
+          # 禁用脚本的内核下载逻辑
+          SKIP_KERNEL_DOWNLOAD: "true"
 
       - name: Upload the packaged fnnas
         uses: ncipollo/release-action@main

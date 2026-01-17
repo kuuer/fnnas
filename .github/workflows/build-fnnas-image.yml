@@ -46,7 +46,7 @@ on:
         type: choice
         options:
           - ophub/fnnas
-          - kuuer/fnos-rk3568-kernel
+          - kuuer/fnnas
       fnnas_kernel:
         description: "Select fnnas kernel version"
         required: false
@@ -201,7 +201,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           YOUR_GITHUB_USER="kuuer"
-          YOUR_REPO="fnos-rk3568-kernel"
+          YOUR_REPO="fnnas"
           KERNEL_TAG="kernel_fnnas_rk3568_dsa"
 
           mkdir -p /builder/custom-kernel

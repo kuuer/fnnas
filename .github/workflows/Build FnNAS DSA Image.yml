@@ -134,7 +134,7 @@ jobs:
 
           echo "build_tag=${{ inputs.fnnas_storage }}" >> ${GITHUB_ENV}
           ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
-          ln -sf /builder/fnnas /home/runner/work/_actions/kuuer/fnnas/main/fnnas  # 适配你的fnnas仓库路径
+          ln -sf /builder/fnnas /home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/fnnas  # 适配你的fnnas仓库路径
           echo "✅ Rockchip 330 base image downloaded"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
@@ -142,16 +142,16 @@ jobs:
       - name: Override kernel download path (Critical Fix)
         run: |
           # 创建工具内核目录
-          sudo mkdir -p /home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}
+          sudo mkdir -p /home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}
           # 下载你的自定义内核到工具默认路径
           sudo curl -fsSL \
                -H "Authorization: Bearer ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}" \
-               -o /home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz \
+               -o /home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz \
                "https://github.com/${KERNEL_USER}/${KERNEL_REPO}/releases/download/${KERNEL_TAG}/${KERNEL_VERSION}-rockchip.tar.gz"
           # 验证并解压
-          if [[ -f "/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz" ]]; then
+          if [[ -f "/home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz" ]]; then
               echo "✅ Custom kernel downloaded to tool path"
-              sudo tar -zxvf /home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz -C /home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}/
+              sudo tar -zxvf /home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}/${KERNEL_VERSION}-rockchip.tar.gz -C /home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}/
           else
               echo "❌ Kernel download failed! Check URL: https://github.com/${KERNEL_USER}/${KERNEL_REPO}/releases/download/${KERNEL_TAG}/${KERNEL_VERSION}-rockchip.tar.gz"
               exit 1
@@ -162,7 +162,7 @@ jobs:
         working-directory: /builder
         run: |
           # 优先从工具内核目录读取DTB
-          DTB_SOURCE="/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/${KERNEL_VERSION}/boot/${RK3568_DTB}"
+          DTB_SOURCE="/home/runner/work/_actions/kuuer/kernel_fnnas_rk3568_dsa/main/make-fnnas/kernel/${KERNEL_VERSION}/boot/${RK3568_DTB}"
           if [[ -f "${DTB_SOURCE}" ]]; then
               sudo cp ${DTB_SOURCE} /builder/fnnas/kernel/dtb/rockchip/
               echo "✅ nanopi-r5s DTB injected"
@@ -176,7 +176,7 @@ jobs:
 
       - name: Package FnNAS (ONLY nanopi-r5s RK3568)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
-        uses: kuuer/fnnas@main
+        uses: kuuer/kernel_fnnas_rk3568_dsa@main
         with:
           fnnas_path: fnnas/*.img.xz
           fnnas_board: ${{ env.RK3568_BOARD }}

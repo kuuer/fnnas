@@ -43,10 +43,10 @@ env:
   TZ: Etc/UTC
   DTB_PATH: "${{ github.workspace }}/*.dtb"
   # 固定内核下载地址
-  KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
-  KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
-  # 构建脚本预期的内核路径（关键：覆盖默认下载路径）
-  SCRIPT_KERNEL_DIR: "/builder/fnnas/kernel_download"
+  CUSTOM_KERNEL_URL: "https://github.com/kuuer/fnnas/releases/download/kernel_fnnas_rk3568_dsa/6.12.41-rockchip.tar.gz"
+  CUSTOM_KERNEL_FILENAME: "6.12.41-rockchip.tar.gz"
+  # 脚本内的内核路径（从错误日志提取）
+  SCRIPT_KERNEL_DIR: "/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/kernel/6.1.y"
   SCRIPT_KERNEL_NAME: "6.1.y-rockchip.tar.gz"
   BACKUP_FNNAS_URL: "https://github.com/ophub/fnnas/releases/download/fnnas_base_image/fnnas-official-arm64-image_rockchip_330.img.xz"
 
@@ -160,74 +160,91 @@ jobs:
 
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Download custom kernel and override script path
-        id: download_kernel
-        working-directory: /builder
+      - name: Pre-download custom kernel to script path (终极方案)
+        id: pre_download_kernel
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         run: |
-          # 1. 创建脚本预期的内核下载目录（关键：和脚本内的路径一致）
-          mkdir -p "${SCRIPT_KERNEL_DIR}"
-          cd "${SCRIPT_KERNEL_DIR}"
+          # 1. 创建脚本预期的内核目录（从错误日志提取的路径）
+          sudo mkdir -p "${SCRIPT_KERNEL_DIR}"
+          sudo chown -R runner:runner "${SCRIPT_KERNEL_DIR}"
 
-          # 2. 下载自定义内核
-          echo "Downloading custom kernel from: ${KERNEL_URL}"
+          # 2. 下载自定义内核到脚本的内核目录，并重命名为脚本预期的文件名
+          echo "下载自定义内核到脚本内核目录：${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}"
           curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 \
-               "${KERNEL_URL}" -o "${SCRIPT_KERNEL_NAME}"
-          
-          # 3. 验证内核文件
-          if [[ ! -f "${SCRIPT_KERNEL_NAME}" ]]; then
-              echo "Kernel download failed! URL: ${KERNEL_URL}"
+               "${CUSTOM_KERNEL_URL}" \
+               -o "${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}"
+
+          # 3. 验证内核文件是否存在
+          if [[ ! -f "${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}" ]]; then
+              echo "内核下载失败！URL: ${CUSTOM_KERNEL_URL}"
               exit 1
           fi
 
-          # 4. 解压内核到脚本预期的路径（模拟脚本下载并解压的过程）
-          echo "解压内核文件..."
-          tar -zxf "${SCRIPT_KERNEL_NAME}" -C "${SCRIPT_KERNEL_DIR}"
+          # 4. 提前解压内核（避免脚本解压失败）
+          echo "提前解压内核文件..."
+          tar -zxf "${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}" -C "${SCRIPT_KERNEL_DIR}"
           
-          # 5. 输出内核路径供后续步骤使用
-          echo "kernel_path=${SCRIPT_KERNEL_DIR}" >> ${GITHUB_OUTPUT}
-          echo "内核文件已放置到脚本预期路径：${SCRIPT_KERNEL_DIR}/${SCRIPT_KERNEL_NAME}"
+          # 5. 验证解压结果
           ls -l "${SCRIPT_KERNEL_DIR}"
+          echo "内核已提前下载并解压到脚本路径：${SCRIPT_KERNEL_DIR}"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Copy root directory DTB files to build path (fix ls error)
+      - name: Modify build script to use custom kernel URL (备用方案)
+        if: ${{ steps.pre_download_kernel.outputs.status }} == 'success' && !cancelled()
+        run: |
+          # 找到脚本中拼接内核URL的文件（通用路径）
+          SCRIPT_FILE="/home/runner/work/_actions/kuuer/fnnas/main/make-fnnas/fnnas.sh"
+          
+          # 检查脚本文件是否存在
+          if [[ -f "${SCRIPT_FILE}" ]]; then
+              echo "修改构建脚本中的内核下载URL..."
+              # 替换脚本中的内核下载URL（匹配rockchip 6.1.y）
+              sudo sed -i "s|https://github.com/kuuer/fnnas/releases/download/kernel_fnnas/6.1.y-rockchip.tar.gz|${CUSTOM_KERNEL_URL}|g" "${SCRIPT_FILE}"
+              # 替换所有6.1.y-rockchip.tar.gz的下载URL（兜底）
+              sudo sed -i "s|6.1.y-rockchip.tar.gz|${CUSTOM_KERNEL_FILENAME}|g" "${SCRIPT_FILE}"
+              echo "脚本修改完成，已替换内核URL为：${CUSTOM_KERNEL_URL}"
+              # 查看修改后的脚本（验证）
+              grep -n "6.1.y-rockchip.tar.gz\|kernel_fnnas_rk3568_dsa" "${SCRIPT_FILE}" || echo "未找到匹配行，但已提前下载内核到路径"
+          else
+              echo "未找到构建脚本文件，跳过URL替换（已提前下载内核到路径）"
+          fi
+
+      - name: Copy root directory DTB files to build path
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         run: |
           if ls ${DTB_PATH} 1> /dev/null 2>&1; then
               echo "Copying DTB files from root directory..."
               # 复制到基础镜像目录
               cp ${DTB_PATH} /builder/fnnas/
-              # 复制到内核目录（先确认目录存在）
-              mkdir -p "/builder/fnnas/kernel_download/"
-              cp ${DTB_PATH} "/builder/fnnas/kernel_download/"
+              # 复制到脚本内核目录（脚本可能从这里读取DTB）
+              mkdir -p "${SCRIPT_KERNEL_DIR}/dtbs"
+              cp ${DTB_PATH} "${SCRIPT_KERNEL_DIR}/dtbs/"
               
-              # 修复ls报错：使用ls -l 路径/* 时，无文件会报错，改为ls -l 路径/ 并过滤dtb
+              # 安全的ls写法，避免报错
               echo "=== DTB files in /builder/fnnas/ ==="
-              ls -l /builder/fnnas/ | grep .dtb || echo "No DTB files found (but copy succeeded)"
-              echo "=== DTB files in /builder/fnnas/kernel_download/ ==="
-              ls -l /builder/fnnas/kernel_download/ | grep .dtb || echo "No DTB files found (but copy succeeded)"
+              ls -l /builder/fnnas/ | grep .dtb || echo "No DTB files found (copy succeeded)"
+              echo "=== DTB files in ${SCRIPT_KERNEL_DIR}/dtbs/ ==="
+              ls -l "${SCRIPT_KERNEL_DIR}/dtbs/" | grep .dtb || echo "No DTB files found (copy succeeded)"
           else
               echo "警告：根目录未找到DTB文件！继续构建，但可能导致镜像无法启动。"
           fi
 
-      - name: Packaging fnnas (skip kernel download)
-        if: ${{ steps.down.outputs.status }} == 'success' && steps.download_kernel.outputs.status == 'success' && !cancelled()
+      - name: Packaging fnnas (use pre-downloaded kernel)
+        if: ${{ steps.pre_download_kernel.outputs.status }} == 'success' && !cancelled()
         uses: kuuer/fnnas@main
         with:
           fnnas_path: fnnas/*.img
           fnnas_board: ${{ inputs.fnnas_board }}
-          fnnas_kernel: "6.1.y"  # 匹配脚本预期的内核版本标识
-          auto_kernel: false      # 强制关闭自动下载
+          fnnas_kernel: "6.1.y"
+          auto_kernel: false
           kernel_repo: kuuer/fnnas
           builder_name: ${{ inputs.builder_name }}
-          dtb_path: /builder/fnnas/  # 明确指定DTB文件所在路径
+          dtb_path: /builder/fnnas/
         env:
-          # 关键：通过环境变量覆盖脚本内的内核下载URL（双重保险）
-          KERNEL_DOWNLOAD_URL: "${KERNEL_URL}"
-          # 禁用脚本的内核下载逻辑
-          SKIP_KERNEL_DOWNLOAD: "true"
-          # 明确指定DTB路径给脚本
-          DTB_FILE_PATH: "/builder/fnnas/rk3568-nanopi-r5s.dtb"
+          # 强制指定内核路径
+          KERNEL_DIR: "${SCRIPT_KERNEL_DIR}"
+          # 禁用curl重试（避免多次404）
+          CURL_RETRY: "0"
 
       - name: Upload the packaged fnnas
         uses: ncipollo/release-action@main

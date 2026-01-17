@@ -216,7 +216,7 @@ jobs:
 
       - name: Package FnNAS (ONLY RK3568 DSA RK3568)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
-        uses: ophub/fnnas@main
+        uses: kuuer/fnnas@main
         with:
           fnnas_path: fnnas/*.img.xz
           fnnas_board: ${{ env.RK3568_BOARD }}
@@ -224,6 +224,7 @@ jobs:
           auto_kernel: ${{ inputs.auto_kernel }}
           kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
           kernel_path: /builder/custom-kernel  # Force use local kernel
+          kernel_download: false
           builder_name: ${{ inputs.builder_name }}
           build_target: rockchip  # Only compile Rockchip architecture
           debs_install: none  # No extra debs

@@ -1,10 +1,10 @@
 #=====================================================================================
 # https://github.com/ophub/fnnas
-# Description: Build FnNAS Image (ONLY for BenDian One RK3568 + DSA Kernel)
+# Description: Build FnNAS Image (ONLY for RK3568 + DSA Kernel)
 # Fix: 禁用自动内核下载，强制使用本地自定义内核，适配RK3568架构
 #=====================================================================================
 
-name: Build FnNAS Image (BenDian One ONLY)
+name: Build FnNAS Image (rk3568_dsa ONLY)
 
 on:
   repository_dispatch:
@@ -25,7 +25,7 @@ on:
       fnnas_storage:
         description: "Release tag name"
         required: false
-        default: "fnnas_bendian_one_dsa"
+        default: "fnnas_rk3568_dsa"
         type: string
       builder_name:
         description: "Builder signature"
@@ -36,8 +36,8 @@ on:
 # 固化核心参数，避免手动选择出错
 env:
   TZ: Etc/UTC
-  BENDIAN_DTB: "rockchip-rk3568-bendian-one.dtb"
-  BENDIAN_BOARD: "dg-tn3568"
+  RK3568_DTB: "rk3568-nanopi-r5s.dtb"
+  RK3568_BOARD: "NanoPi-R5S"
   FN_BASE_VERSION: "rockchip_330"
   KERNEL_USER: "kuuer"
   KERNEL_REPO: "fnnas"
@@ -157,7 +157,7 @@ jobs:
           echo "✅ Rockchip 330 base image downloaded successfully"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Download Custom DSA Kernel (RK3568 for BenDian One)
+      - name: Download Custom DSA Kernel (RK3568 for DSA)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         working-directory: /builder
         env:
@@ -179,7 +179,7 @@ jobs:
           ln -sf /builder/custom-kernel /builder/fnnas/kernel
           echo "✅ Custom DSA kernel loaded successfully"
 
-      - name: Inject BenDian One DTB (Build from source or copy)
+      - name: Inject RK3568 DSA DTB (Build from source or copy)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         working-directory: /builder
         run: |
@@ -189,20 +189,20 @@ jobs:
               echo "📌 Compiling DTB from kernel source"
               cd /builder/custom-kernel
               sudo apt-get install -y device-tree-compiler
-              make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${BENDIAN_DTB} -j$(nproc)
-              if [[ -f "${DTS_DIR}/${BENDIAN_DTB}" ]]; then
-                  sudo cp ${DTS_DIR}/${BENDIAN_DTB} /builder/fnnas/kernel/dtb/rockchip/
+              make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${RK3568_DTB} -j$(nproc)
+              if [[ -f "${DTS_DIR}/${RK3568_DTB}" ]]; then
+                  sudo cp ${DTS_DIR}/${RK3568_DTB} /builder/fnnas/kernel/dtb/rockchip/
                   echo "✅ DTB compiled successfully"
                   exit 0
               fi
           fi
 
           # Fallback: copy from repo root
-          if [[ -f "${{ github.workspace }}/${BENDIAN_DTB}" ]]; then
-              sudo cp ${{ github.workspace }}/${BENDIAN_DTB} /builder/fnnas/kernel/dtb/rockchip/
+          if [[ -f "${{ github.workspace }}/${RK3568_DTB}" ]]; then
+              sudo cp ${{ github.workspace }}/${RK3568_DTB} /builder/fnnas/kernel/dtb/rockchip/
               echo "✅ DTB copied from repo root"
           else
-              echo "❌ Error: ${BENDIAN_DTB} not found! Upload it to repo root first"
+              echo "❌ Error: ${RK3568_DTB} not found! Upload it to repo root first"
               exit 1
           fi
 
@@ -214,12 +214,12 @@ jobs:
           ln -sf /builder/custom-kernel /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
           echo "✅ Default kernel dir cleaned, custom kernel linked"
 
-      - name: Package FnNAS (ONLY BenDian One RK3568)
+      - name: Package FnNAS (ONLY RK3568 DSA)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         uses: ophub/fnnas@main
         with:
           fnnas_path: fnnas/*.img.xz
-          fnnas_board: ${{ env.BENDIAN_BOARD }}
+          fnnas_board: ${{ env.RK3568_BOARD }}
           fnnas_kernel: ${{ inputs.fnnas_kernel }}
           auto_kernel: ${{ inputs.auto_kernel }}
           kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
@@ -229,7 +229,7 @@ jobs:
           debs_install: none  # No extra debs
           dtbs_install: false  # No extra dtbs
 
-      - name: Upload BenDian One Image to Release
+      - name: Upload RK3568 DSA Image to Release
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
@@ -241,9 +241,9 @@ jobs:
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            # FnNAS Image for BenDian One (RK3568)
+            # FnNAS Image for RK3568 DSA (RK3568)
             - **Kernel**: 6.12.y-trim-dsa (Supports RTL8367 switch & eth1 port)
-            - **DTB**: ${BENDIAN_DTB} (100% hardware compatibility)
+            - **DTB**: ${RK3568_DTB} (100% hardware compatibility)
             - **Base Image**: Rockchip 330 (RK3568 architecture only)
             - **Builder**: ${{ inputs.builder_name }}
-            - ⚠️ Only for BenDian One, do not flash to other devices!
+            - ⚠️ Only for RK3568 DSA, do not flash to other devices!

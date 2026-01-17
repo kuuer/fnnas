@@ -1,84 +1,39 @@
 #=====================================================================================
 # https://github.com/ophub/fnnas
-# Description: Build FnNAS Image (BenDian One + DSA Kernel)
+# Description: Build FnNAS Image (ONLY RK3568 DSA)
+# 仅适配 RK3568 架构，固化参数，禁用无关选项
 #=====================================================================================
 
-name: Build FnNAS Image (RK3568 + DSA)
+name: Build FnNAS Image (RK3568 DSA ONLY)
 
 on:
   repository_dispatch:
   workflow_dispatch:
     inputs:
-      fnnas_base_version:
-        description: "Select fnnas base image version"
-        required: false
-        default: "rockchip_330"
-        type: choice
-        options:
-          - amlogic_338
-          - amlogic_322
-          - amlogic_300
-          - allwinner_335
-          - allwinner_317
-          - rockchip_330
-          - rockchip_321
-          - rockchip_296
-      fnnas_board:
-        description: "Select fnnas device board"
-        required: false
-        default: "dg-tn3568"
-        type: choice
-        options:
-          - all
-          - first50
-          - from50
-          - last20
-          - a311d-oes_s922x-oes-plus_wxy-oect
-          - nsy-g16-plus_nsy-g68-plus_bdy-g18-pro
-          - s905d_s905x3_s912_s922x-ct2000
-          - dg-tn3568
-          - lz-k3568
-          # 保持原有所有设备型号选项
-      kernel_repo:
-        description: "Set fnnas kernel repository"
-        required: false
-        default: "kuuer/fnos-rk3568-kernel"
-        type: choice
-        options:
-          - ophub/fnnas
-          - kuuer/fnnas
-      fnnas_kernel:
-        description: "Select fnnas kernel version"
-        required: false
-        default: "6.12.y"
-        type: choice
-        options:
-          - 6.12.y
-      auto_kernel:
-        description: "Auto use the latest kernel"
-        required: false
-        default: false
-        type: boolean
+      # 仅保留必要参数，移除所有无关的架构/设备选项
       fnnas_storage:
         description: "Set fnnas image releases tags"
         required: false
         default: "fnnas_rk3568_dsa"
-      fnnas_url:
-        description: "Custom fnnas image download url"
-        required: false
-        default: ""
       builder_name:
         description: "Set fnnas builder signature"
         required: false
-        default: "yourname"
+        default: "ophub"
         type: choice
         options:
           - ophub
           - angel
           - yourname
 
+# 固化 RK3568 DSA 核心参数
 env:
   TZ: Etc/UTC
+  FN_BASE_VERSION: "rockchip_330"       # 仅 RK3568 基础镜像
+  RK3568_BOARD: "dg-tn3568"             # RK3568 适配设备
+  KERNEL_USER: "kuuer"                  # 你的 GitHub 账号
+  KERNEL_REPO: "fnnos-rk3568-kernel"    # 你的 RK3568 DSA 内核仓库
+  KERNEL_TAG: "kernel_fnnas_rk3568_dsa" # 你的内核 Release 标签
+  KERNEL_VERSION: "6.12.y"              # 内核版本
 
 jobs:
   build:
@@ -133,35 +88,67 @@ jobs:
           df -Th
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Download fnnas image file
+      - name: Download fnnas image file (ONLY RK3568)
         id: down
         working-directory: /builder
         if: (!cancelled())
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Create directory
           [[ -d "fnnas" ]] || mkdir -p fnnas
-          input_url="${{ inputs.fnnas_url }}"
-          fnnas_base_version="${{ inputs.fnnas_base_version }}"
 
+          input_url="${{ inputs.fnnas_url }}"
+          fnnas_base_version="${FN_BASE_VERSION}" # 使用固化的RK3568基础镜像版本
+
+          # -------------------------------------------------------
+          # Case A: URL specified (仅保留逻辑，强制RK3568镜像)
+          # -------------------------------------------------------
           if [[ -n "${input_url}" ]]; then
+              echo "Custom URL detected: ${input_url}"
               clean_url="${input_url%%\?*}"
               regex="github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)"
+
               if [[ "${clean_url}" =~ $regex ]]; then
                   owner="${BASH_REMATCH[1]}"
                   repo="${BASH_REMATCH[2]}"
                   tag="${BASH_REMATCH[3]}"
                   filename="${BASH_REMATCH[4]}"
+
+                  # 校验自定义URL是否为RK3568镜像
+                  if [[ ! "${filename}" =~ "rockchip_330" ]]; then
+                      echo "❌ Custom URL must be rockchip_330 image for RK3568!"
+                      exit 1
+                  fi
+
+                  echo "Detected GitHub Release URL (RK3568 only)."
+                  echo "Repo: $owner/$repo | Tag: $tag | File: $filename"
+
                   gh release download "${tag}" \
                       --repo "${owner}/${repo}" \
                       --pattern "${filename}" \
                       --dir "fnnas" \
                       --clobber
-                  [[ -f "fnnas/${filename}" ]] && { echo "status=success" >> ${GITHUB_OUTPUT}; exit 0; }
+
+                  if [[ -f "fnnas/${filename}" ]]; then
+                      echo "Download success via gh-cli."
+                      echo "status=success" >> ${GITHUB_OUTPUT}
+                      exit 0
+                  else
+                      echo "gh download failed."
+                      exit 1
+                  fi
+              else
+                  echo "Using curl fallback (RK3568 only)..."
+                  latest_url="${input_url}"
+                  fnnas_filename=$(basename "${clean_url}")
               fi
-              latest_url="${input_url}"
-              fnnas_filename=$(basename "${clean_url}")
+
+          # -------------------------------------------------------
+          # Case B: Automatically fetch the latest RK3568 version
+          # -------------------------------------------------------
           else
+              echo "Auto-detecting latest RK3568 release..."
               latest_version=$(curl -s \
                   -H "Accept: application/vnd.github+json" \
                   -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -174,65 +161,81 @@ jobs:
                   reverse |
                   .[0] |
                   {data: .updated_at, url: .url, name: .name}')
-              [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && { echo "Download failed"; exit 1; }
+
+              [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
+                  echo "Invalid RK3568 image file download address."
+                  exit 1
+              }
+
               latest_url="$(echo ${latest_version} | jq -r '.url')"
               fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
           fi
+
+          # -------------------------------------------------------
+          # Execute curl download (RK3568 only)
+          # -------------------------------------------------------
+          echo "Downloading RK3568 image: ${fnnas_filename}"
+          echo "Source: ${latest_url}"
 
           curl -fsSL \
                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                -H "Accept: application/octet-stream" \
                "${latest_url}" \
                -o "fnnas/${fnnas_filename}"
-          [[ "${?}" -ne "0" ]] && exit 1
+
+          [[ "${?}" -ne "0" ]] && echo "Download failed." && exit 1
 
           fnnas_storage="${{ inputs.fnnas_storage }}"
           [[ -n "${fnnas_storage}" ]] || fnnas_storage="fnnas_save"
           echo "build_tag=${fnnas_storage}" >> ${GITHUB_ENV}
           ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
           ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
+
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      # 新增：下载自定义DSA内核并替换默认内核
-      - name: Download Custom DSA Kernel (RK3568)
+      # 新增：下载并替换RK3568 DSA内核
+      - name: Download RK3568 DSA Kernel (Custom)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         working-directory: /builder
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          YOUR_GITHUB_USER="kuuer"
-          YOUR_REPO="fnnas"
-          KERNEL_TAG="kernel_fnnas_rk3568_dsa"
-
           mkdir -p /builder/custom-kernel
           cd /builder/custom-kernel
 
-          # 下载内核包
+          # 下载自定义DSA内核
           gh release download ${KERNEL_TAG} \
-            --repo ${YOUR_GITHUB_USER}/${YOUR_REPO} \
+            --repo ${KERNEL_USER}/${KERNEL_REPO} \
             --pattern "*.tar.gz" \
-            --clobber
+            --clobber || {
+              echo "❌ RK3568 DSA Kernel download failed! Check: https://github.com/${KERNEL_USER}/${KERNEL_REPO}/releases/tag/${KERNEL_TAG}"
+              exit 1
+            }
 
-          # 解压
+          # 解压并替换默认内核
           tar -zxvf *.tar.gz
-
-          # 替换默认内核路径
           rm -rf /builder/fnnas/kernel
           ln -sf /builder/custom-kernel /builder/fnnas/kernel
-          echo "Custom DSA kernel has been loaded successfully!"
+          
+          # 兜底：替换工具内核路径，杜绝404
+          rm -rf /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
+          ln -sf /builder/custom-kernel /home/runner/work/_actions/ophub/fnnas/main/make-fnnas/kernel
+          echo "✅ RK3568 DSA Kernel loaded successfully"
 
-      - name: Packaging fnnas
+      - name: Packaging fnnas (ONLY RK3568)
         if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
         uses: ophub/fnnas@main
         with:
           fnnas_path: fnnas/*.img.xz
-          fnnas_board: ${{ inputs.fnnas_board }}
-          fnnas_kernel: ${{ inputs.fnnas_kernel }}
-          auto_kernel: ${{ inputs.auto_kernel }}
-          kernel_repo: ${{ inputs.kernel_repo }}
+          fnnas_board: ${{ env.RK3568_BOARD }}  # 仅编译dg-tn3568
+          fnnas_kernel: ${{ env.KERNEL_VERSION }}
+          auto_kernel: false                     # 禁用自动内核
+          kernel_repo: ${KERNEL_USER}/${KERNEL_REPO}
+          kernel_path: /builder/custom-kernel    # 强制本地内核
+          kernel_download: false                 # 禁用工具下载
           builder_name: ${{ inputs.builder_name }}
 
-      - name: Upload the packaged fnnas
+      - name: Upload the packaged fnnas (RK3568 DSA)
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
@@ -244,7 +247,9 @@ jobs:
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            - FnNAS Image for BenDian One (RK3568) with DSA support.
-            - Kernel version: 6.12.y-trim-dsa, supports RTL8367 switch and eth1 network port.
-            - 基于 FnNAS 官方镜像构建，适配 RK3568 开发板，预装带 DSA 支持的 RK3568 内核。
-            - 内核版本 6.12.y-trim-dsa，支持 RTL8367 交换机和 eth1 网口。
+            - Based on the official fnnas.com Arm64 release (rockchip_330), ONLY for RK3568 devices.
+            - Kernel: 6.12.y-trim-dsa (Supports RTL8367 switch & eth1 port)
+            - Device: dg-tn3568
+            - 基于 fnnas.com 官方 rockchip_330 镜像构建，仅适配 RK3568 设备。
+            - 内核版本：6.12.y-trim-dsa，支持 RTL8367 交换机和 eth1 网口。
+            - 适配设备：dg-tn3568

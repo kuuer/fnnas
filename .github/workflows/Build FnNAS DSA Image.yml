@@ -40,7 +40,7 @@ env:
   RK3568_BOARD: "nanopi-r5s"
   FN_BASE_VERSION: "rockchip_330"
   KERNEL_USER: "kuuer"
-  KERNEL_REPO: "fnnas"
+  KERNEL_REPO: "kernel_fnnas_rk3568_dsa"
   KERNEL_TAG: "kernel_fnnas_rk3568_dsa"
 
 jobs:

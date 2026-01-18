@@ -1,130 +1,187 @@
-- name: Inject DSA (RTL8367S) config for RK3568
-  if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
-  working-directory: /builder
-  shell: /usr/bin/bash -e {0}
-  env:
-    TZ: Etc/UTC
-    FNNAS_BASE_VERSION: rockchip_330
-    DEBS_REPO: ophub/fnnas
-    DEBS_VERSION: 6.12.y
-    DEBS_INSTALL: rockchip
-    DTBS_INSTALL: true
-  run: |
-    # 定义fnnas内核编译的实际工作目录（适配ophub/fnnas工具的目录结构）
-    FNNAS_KERNEL_DIR="/builder/fnnas"
-    KERNEL_SRC_DIR="${FNNAS_KERNEL_DIR}/kernel/${DEBS_VERSION}"
-    
-    # 第一步：先通过fnnas工具初始化内核源码（关键修复）
-    echo "Initializing kernel source code for ${DEBS_VERSION}..."
-    cd ${FNNAS_KERNEL_DIR}
-    # 调用fnnas工具拉取指定版本的内核源码
-    bash <(curl -fsSL https://raw.githubusercontent.com/ophub/fnnas/main/fnnas.sh) \
-      -k ${DEBS_VERSION} \
-      -d ${DEBS_REPO} \
-      -a arm64 \
-      -o ${FNNAS_KERNEL_DIR} || {
-        echo "Error: Failed to initialize kernel source code!"
-        exit 1
-      }
-    
-    # 验证内核源码和Makefile是否存在
-    if [ ! -f "${KERNEL_SRC_DIR}/Makefile" ]; then
-        echo "Error: Kernel Makefile not found in ${KERNEL_SRC_DIR}!"
-        # 尝试查找实际的内核源码目录
-        find ${FNNAS_KERNEL_DIR}/kernel -name "Makefile" -type f | head -5
-        exit 1
-    fi
-    
-    # 第二步：备份原始配置文件
-    cd ${KERNEL_SRC_DIR}
-    [ -f ".config" ] && cp .config .config.bak || true
-    
-    # 第三步：生成默认配置（基于arm64架构）
-    echo "Generating default config for RK3568 arm64..."
-    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig || {
-        echo "Error: Failed to generate default config!"
-        exit 1
-    }
-    
-    # 第四步：注入RK3568 + RTL8367S专用DSA配置
-    echo "Injecting DSA (RTL8367S) config to kernel..."
-    cat > .config << EOF
-    # 保留原有非DSA相关配置
-    $(cat .config 2>/dev/null | grep -v -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_DMA|CONFIG_STMMAC|CONFIG_NET_DSA|CONFIG_BRIDGE|CONFIG_NET_VLAN|CONFIG_NET_SWITCHDEV")
-    
-    # ===================== RK3568 DSA 核心配置 =====================
-    # DSA基础支持
-    CONFIG_DSA=y
-    CONFIG_DSA_CORE=y
-    CONFIG_DSA_TAG_8021Q=y
-    CONFIG_DSA_TAG_RTL4_A=y
-    CONFIG_DSA_TAG_RTL8367=y
-    
-    # RK3568 GMAC DSA驱动
-    CONFIG_DSA_ROCKCHIP_GMAC=y
-    CONFIG_NET_DSA_ROCKCHIP=y
-    CONFIG_ROCKCHIP_GMAC=y
-    CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y
-    CONFIG_ROCKCHIP_GMAC_DEBUG=y
-    
-    # RTL8367S交换机专用配置（核心）
-    CONFIG_DSA_RTL8367=y
-    CONFIG_DSA_RTL8367S=y
-    CONFIG_NET_DSA_REALTEK=y
-    CONFIG_NET_DSA_REALTEK_MDIO=y
-    CONFIG_NET_DSA_REALTEK_SMI=y
-    
-    # DMA支持（RK3568网络必备）
-    CONFIG_DMA_ENGINE=y
-    CONFIG_DMA_ROCKCHIP=y
-    CONFIG_STMMAC_ETH=y
-    CONFIG_STMMAC_DMA=y
-    CONFIG_STMMAC_DSA=y
-    CONFIG_STMMAC_RGMII=y
-    CONFIG_STMMAC_MDIO=y
-    
-    # 网络功能增强
-    CONFIG_NET_VLAN=y
-    CONFIG_BRIDGE=y
-    CONFIG_BRIDGE_VLAN_FILTERING=y
-    CONFIG_NET_SWITCHDEV=y
-    EOF
-    
-    # 第五步：修复配置兼容性（关键步骤）
-    echo "Fixing config compatibility..."
-    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig || {
-        echo "Warning: olddefconfig has minor issues, continue with savedefconfig..."
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
-        cp defconfig .config
-    }
-    
-    # 第六步：验证关键配置是否生效
-    echo "Verifying RTL8367S DSA config..."
-    REQUIRED_CONFIGS=(
-        "CONFIG_DSA_RTL8367S=y"
-        "CONFIG_ROCKCHIP_GMAC_DSA_SUPPORT=y"
-        "CONFIG_DSA_CORE=y"
-    )
-    CONFIG_ERROR=0
-    for config in "${REQUIRED_CONFIGS[@]}"; do
-        if ! grep -q "^${config}$" .config; then
-            echo "Error: Missing required config: ${config}"
-            CONFIG_ERROR=1
-        fi
-    done
-    
-    if [ ${CONFIG_ERROR} -eq 1 ]; then
-        echo "Error: Critical DSA config injection failed!"
-        # 打印当前配置供调试
-        grep -E "CONFIG_DSA|CONFIG_ROCKCHIP_GMAC|CONFIG_RTL8367" .config
-        exit 1
-    fi
-    
-    # 保存最终配置
-    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
-    cp defconfig ${FNNAS_KERNEL_DIR}/kernel_defconfig
-    
-    echo "✅ DSA (RTL8367S) config injected successfully for RK3568!"
-    echo "Kernel config path: ${KERNEL_SRC_DIR}/.config"
-    # 打印关键配置确认
-    grep -E "CONFIG_DSA_RTL8367S|CONFIG_ROCKCHIP_GMAC_DSA" .config
+#==========================================================================
+# Description: Build FnNAS Kernel
+# Copyright (C) 2025 https://fnnas.com
+# Copyright (C) 2026 https://github.com/ophub/fnnas
+#==========================================================================
+
+name: Build FnNAS Kernel
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      fnnas_base_version:
+        description: "Select fnnas base image version"
+        required: false
+        default: "amlogic_338"
+        type: choice
+        options:
+          - amlogic_338
+          - amlogic_322
+          - amlogic_300
+          - allwinner_335
+          - allwinner_317
+          - rockchip_330
+          - rockchip_321
+          - rockchip_296
+      debs_repo:
+        description: "Set fnnas debs repository"
+        required: false
+        default: "ophub/fnnas"
+      debs_version:
+        description: "Set fnnas debs version"
+        required: false
+        default: "6.12.y"
+        type: choice
+        options:
+          - 6.12.y
+      debs_install:
+        description: "Install kernel debs files"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - amlogic
+          - allwinner
+          - rockchip
+          - none
+      dtbs_install:
+        description: "Install kernel dtbs files"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  TZ: Etc/UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialization environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo -E apt-get -y update
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-fnnas-depends)
+          sudo -E systemctl daemon-reload
+          #sudo -E apt-get -y full-upgrade
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo -E timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo -E ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo -E timedatectl set-ntp true
+          date -u
+          timedatectl status || true
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create simulated physical disk
+        id: disk
+        run: |
+          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
+          root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
+          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
+          sudo truncate -s "${root_size}"G /root.img
+          sudo losetup /dev/loop6 /mnt/mnt.img
+          sudo losetup /dev/loop7 /root.img
+          sudo pvcreate /dev/loop6
+          sudo pvcreate /dev/loop7
+          sudo vgcreate github /dev/loop6 /dev/loop7
+          sudo lvcreate -n runner -l 100%FREE github
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 /dev/github/runner
+          sudo mkdir -p /builder
+          sudo mount /dev/github/runner /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Download latest fnnas image
+        id: down
+        working-directory: /builder
+        if: (!cancelled())
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Starting to download the latest fnnas base image..."
+          fnnas_base_version="${{ inputs.fnnas_base_version }}"
+          [[ -d "fnnas" ]] || mkdir -p fnnas
+
+          latest_version=$(curl -s \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
+              jq -r --arg RTK "fnnas_base_image" \
+              --arg BOARD "${fnnas_base_version}" \
+              '[.[] | select(.tag_name | contains($RTK))] |
+              map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
+              sort_by(.updated_at) |
+              reverse |
+              .[0] |
+              {data: .updated_at, url: .url, name: .name}')
+
+          [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
+              echo "Invalid fnnas image file download address."
+              exit 1
+          }
+
+          latest_url="$(echo ${latest_version} | jq -r '.url')"
+          fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
+          echo "Downloading: ${fnnas_filename}"
+          echo "Source: ${latest_url}"
+
+          curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              "${latest_url}" \
+              -o "fnnas/${fnnas_filename}"
+
+          [[ "${?}" -ne "0" ]] && echo "Download failed." && exit 1
+
+          ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
+          ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Compile the fnnas kernel [ ${{ inputs.debs_version }} ]
+        uses: ophub/fnnas@main
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        with:
+          build_target: kernel
+          fnnas_path: fnnas/*.img.xz
+          debs_repo: ${{ inputs.debs_repo }}
+          debs_version: ${{ inputs.debs_version }}
+          debs_install: ${{ inputs.debs_install }}
+          dtbs_install: ${{ inputs.dtbs_install }}
+
+      - name: Upload Kernel to Release
+        uses: ncipollo/release-action@main
+        if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
+        with:
+          tag: kernel_fnnas
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allowUpdates: true
+          removeArtifacts: false
+          replacesArtifacts: true
+          makeLatest: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            - FnNAS Dedicated Kernel. Based on official [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) packages from `fnnas.com`,
+              and repackaged into .tar.gz format using the `rekernel` tool.
+              It is optimized for batch packaging and supports online updates via the `fnnas-update` command.
+            - FnNAS 专用内核。基于 `fnnas.com` 官方提供的 [dtbs](https://github.com/ophub/fnnas/releases/tag/kernel_fnnas) 安装包，
+              利用本仓库的 `rekernel` 工具重新封装为 .tar.gz 格式。
+              该内核既适用于批量打包，也支持通过 `fnnas-update` 命令进行在线更新。
